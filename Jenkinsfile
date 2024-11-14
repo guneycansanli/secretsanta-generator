@@ -1,85 +1,112 @@
 pipeline {
     agent any
-    tools{
-        jdk 'jdk17'
+    
+    tools {
         maven 'maven3'
+        jdk 'jdk17'
     }
-    environment{
+    
+    
+    environment {
+        
         SCANNER_HOME= tool 'sonar-scanner'
+    }
+    // Gitlab Webhooks 
+    // ##############
+    triggers {
+        GenericTrigger(
+          genericVariables: [
+            [key: 'ref', value: '$.ref'],
+            [key: 'before', value: '$.before'],
+            [key: 'after', value: '$.after'],
+            [key: 'repo_url', value: '$.repository.url'],
+          ],
+          causeString: 'Triggered By Gitlab On $ref',
+          token: 'git-lab-webhook',
+          tokenCredentialId: '',
+          // filter the deletion of release branch
+          regexpFilterText: '$after',
+          regexpFilterExpression: '^(?!0000000000000000000000000000000000000000$).*$',
+          printContributedVariables: true,
+          printPostContent: true,
+          silentResponse: false,
+        )
     }
 
     stages {
-        stage('git-checkout') {
+        stage('Git Checkout') {
             steps {
-                git 'https://github.com/jaiswaladi246/secretsanta-generator.git'
-            }
-        }
-
-        stage('Code-Compile') {
-            steps {
-               sh "mvn clean compile"
+                git 'https://github.com/guneycansanli/secretsanta-generator.git'
             }
         }
         
-        stage('Unit Tests') {
+        stage('Compile') {
             steps {
-               sh "mvn test"
+                sh "mvn compile"
             }
         }
         
-		stage('OWASP Dependency Check') {
+        stage('Tests') {
             steps {
-               dependencyCheck additionalArguments: ' --scan ./ ', odcInstallation: 'DC'
+                sh "mvn test"
+            }
+        }
+        
+        stage('Sonarqube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=santa \
+                    -Dsonar.projectKey=santa -Dsonar.java.binaries=. '''
+                }
+            }
+        }
+        
+        stage('Owasp Scan') {
+            steps {
+                dependencyCheck additionalArguments: ' --scan . ', odcInstallation: 'DC'
                     dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
             }
         }
-
-
-        stage('Sonar Analysis') {
+        
+        stage('Build') {
             steps {
-               withSonarQubeEnv('sonar'){
-                   sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Santa \
-                   -Dsonar.java.binaries=. \
-                   -Dsonar.projectKey=Santa '''
-               }
-            }
-        }
-
-		 
-        stage('Code-Build') {
-            steps {
-               sh "mvn clean package"
-            }
-        }
-
-         stage('Docker Build') {
-            steps {
-               script{
-                   withDockerRegistry(credentialsId: 'docker-cred') {
-                    sh "docker build -t  santa123 . "
-                 }
-               }
-            }
-        }
-
-        stage('Docker Push') {
-            steps {
-               script{
-                   withDockerRegistry(credentialsId: 'docker-cred') {
-                    sh "docker tag santa123 adijaiswal/santa123:latest"
-                    sh "docker push adijaiswal/santa123:latest"
-                 }
-               }
+                sh "mvn package"
             }
         }
         
-        	 
-        stage('Docker Image Scan') {
+        stage('Build Docker Image') {
             steps {
-               sh "trivy image adijaiswal/santa123:latest "
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh "docker build -t santa:latest ."
+                    }
+                }
             }
-        }}
+        }
         
+        stage('Tag & Push Docker Image') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh "docker tag santa:latest gnyscnsnli/santa:latest"
+                        sh "docker push gnyscnsnli/santa:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Application') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh "docker run -d -p 8081:8080 gnyscnsnli/santa:latest"
+                    }
+                }
+            }
+        }
+        
+    }
+        // E-mail notification
          post {
             always {
                 emailext (
@@ -91,15 +118,11 @@ pipeline {
                                     <p>Check the <a href="${BUILD_URL}">console output</a>.</p>
                                 </body>
                             </html>''',
-                    to: 'jaiswaladi246@gmail.com',
+                    to: 'guneycansanli@gmail.com',
                     from: 'jenkins@example.com',
                     replyTo: 'jenkins@example.com',
                     mimeType: 'text/html'
                 )
             }
         }
-		
-		
-
-    
 }
